@@ -9,7 +9,7 @@ How the individual and neighborhood level sociomarkers are associated with pain 
 
 ## Findings
 
-In our study of 1,145patients with breast cancer, socio-economic conditions at the individual level and neighborhood level were significantly associated with pain. 
+In our study of 1,145 patients with breast cancer, socio-economic conditions at the individual level and neighborhood level were significantly associated with pain. 
 
 ## Code
 
