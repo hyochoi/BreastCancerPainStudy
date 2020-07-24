@@ -397,7 +397,7 @@ explvars = c("Pain","Poverty","Vacancy",
 table1(as.formula(paste(" ~ ",paste(c(respvar,explvars),collapse=" + "))), data=final.data)
 ```
 
-```{r,echo=FALSE}
+```{r,echo=FALSE,eval=FALSE}
 respvar = "Pain"
 explvars = c("Pain","Poverty","Vacancy",
              "Occupation","Marital.status","Insurance.type",
@@ -408,6 +408,86 @@ explvars = c("Pain","Poverty","Vacancy",
              "HER2","ER","PR","Metastasis")
 
 table1(as.formula(paste(" ~ ",paste(c(respvar,explvars),collapse=" + "))), data=final.data)
+```
+
+```{r,echo=FALSE}
+explvars = c("Pain","Poverty","Vacancy",
+             "Occupation","Marital.status","Insurance.type",
+             "Cancer.stage","Chemo","Surgery",
+             "Race","Age",
+             "Histology",
+             "Primary.Site.1","Primary.Site.2",
+             "HER2","ER","PR","Metastasis")
+
+get_summary = function(j) {
+  x = final.data[,j]
+  cname = colnames(final.data)[j]
+  if (class(x)=="numeric") {
+    tmp.sum = t(t(c(paste0(round(mean(x),digits=2)," (",round(sd(x),digits=2),")"),
+                    paste0(round(median(x),digits=2)," [",round(min(x),digits=2),",",round(max(x),digits=2),"]"))))
+    rownames(tmp.sum) = paste(cname,c("Mean (SD)","Median [Min,Max]"),sep="_")
+  } else {
+    tmp.sum = t(t(summary(x)))
+    tmp.sum[,1] = paste(tmp.sum[,1],paste0("(",round(100*(tmp.sum[,1]/sum(tmp.sum[,1])),digits=1),"%)"))
+    rownames(tmp.sum) = paste(cname,rownames(tmp.sum),sep="_")
+  }
+  return(tmp.sum)
+}
+table.sum1 = do.call("rbind",sapply(1:ncol(final.data),get_summary))
+
+get_mean = function(j) {
+  x = final.data[,j]
+  cname = colnames(final.data)[j]
+  if (class(x)=="numeric") {
+    tmp.sum = t(t(c(NA,NA)))
+  } else {
+    tmp.sum = t(t(sapply(split(final.data[,"Pain"],final.data[,j]),function(x) 
+  paste0(round(mean(x),digits=2)," [",paste0(round(quantile(x,c(0.25,0.75)),digits=2),collapse=","),"]"))))
+  }
+  return(tmp.sum)
+}
+
+get_pval = function(j) {
+  x = final.data[,j]
+  cname = colnames(final.data)[j]
+  if (class(x)=="numeric") {
+    tmp.sum = t(t(c(1,NA)))
+  } else {
+    tmp.sum = t(t(rep(NA,length(levels(x)))))
+    tmp.sum[1,1] = 1
+  }
+  return(tmp.sum)
+}
+
+table.sum1 = cbind(do.call("rbind",sapply(1:ncol(final.data),get_summary)),
+                   do.call("rbind",sapply(1:ncol(final.data),get_mean)),
+                   do.call("rbind",sapply(1:ncol(final.data),get_pval)))
+colnames(table.sum1) = c("No. (%)","Pain, mean [Q1,Q3]","P-value")
+
+## htmlTable
+library(htmlTable)
+
+rowlabels = sapply(rownames(table.sum1),function(x) unlist(strsplit(x,split="_"))[1])
+htmlTable(table.sum1,
+          rgroup = c(gsub(pattern="[.]",replacement=" ",x=explvars[1:length(explvars)])),
+          rnames = sapply(rownames(table.sum1),function(x) unlist(strsplit(x,split="_"))[2]),
+          n.rgroup = sapply(explvars, function(x) length(which(rowlabels==x))),
+          caption = "Table 1. Baseline characteristics, mean and interquartile range of pain intensity, nonparametric rank test")
+
+```
+
+```{r,echo=FALSE,eval=FALSE}
+library(stats)
+j = 4
+colnames(final.data)[j]
+kruskal.test(final.data[,"Pain"] ~ final.data[,j])
+kruskal.test(final.data[-which(final.data[,j]=="Unknown"),"Pain"] ~ final.data[-which(final.data[,j]=="Unknown"),j])
+å
+kruskal.test(final.data[which(final.data[,j] %in% c("Employed","Unemployed")),"Pain"] ~ final.data[which(final.data[,j] %in% c("Employed","Unemployed")),j])
+
+wilcox.test(final.data[-which(final.data[,j]=="Unknown"),"Pain"] ~ final.data[-which(final.data[,j]=="Unknown"),j])
+
+compare_means(Pain ~ Occupation,data=final.data)
 ```
 
 ## Figure 2
@@ -451,7 +531,7 @@ cat(paste("Median of Vacancy =",round(median(cdmd.pvt$Vacancy),digits=3)),"\n")
 
 * Pain ~ Poverty
 
-```{r,echo=FALSE}
+```{r,echo=FALSE,eval=FALSE}
 p.glm = glm(Pain ~ Poverty, data = final.data, family = "poisson")
 # summary(p.glm)
 fhat = function(x) {
@@ -517,7 +597,7 @@ dev.off()
 
 * Pain ~ Vacancy
 
-```{r,echo=FALSE}
+```{r,echo=FALSE,eval=FALSE}
 p.glm = glm(Pain ~ Vacancy, data = final.data, family = "poisson")
 # summary(p.glm)
 fhat = function(x) {
@@ -559,7 +639,7 @@ dev.off()
 
 ```
 
-```{r,echo=FALSE}
+```{r,echo=FALSE,eval=FALSE}
 p.glm = glm(Pain ~ Vacancy, data = cdmd.pvt, family = "poisson")
 # summary(p.glm)
 # summary(zeroinfl(Pain ~ Poverty, data = cdmd.pvt, dist="poisson"))
@@ -593,7 +673,7 @@ points(x=x,y=fhat(x),type="l",lwd=2)
 
 # Significance 
 
-```{r,echo=FALSE}
+```{r,echo=FALSE,eval=FALSE}
 xlist = c("Poverty.f","marital.status.f","Primary.Payer.f2","Usual.Occupation.f2","race.f","stage.f","age.f","chemo.f","surgery.f")
 
 x = xlist[1]
@@ -830,7 +910,7 @@ base <- ggboxplot(tmp, x=x, y="Pain",
 p <- base +
   theme(plot.title=element_text(face="bold",size=20,margin=margin(t=10,b=20)))
 ggsave(p, file=paste0(x,".pdf"),width=6, height=6)
-
+```
 
 ## Table 2
 
@@ -853,7 +933,7 @@ full.formula = as.formula(paste(respvar," ~ ",paste(explvars,collapse=" + ")))
 ```
 
 
-```{r,echo=FALSE,eval=FALSE}
+```{r,echo=FALSE}
 
 ## Get the ordered explanatory variables in full model
 full.model = zeroinfl(full.formula, data = final.data, dist="poisson")
