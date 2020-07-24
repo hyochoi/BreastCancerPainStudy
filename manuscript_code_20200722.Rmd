@@ -1,0 +1,980 @@
+---
+title: "Code for Breast Cancer Pain Study"
+output:
+  html_document:
+    toc: true
+    toc_depth: 2
+    number_sections: true
+    fig_width: 12
+    fig_height: 6
+editor_options:
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+library(knitr)
+opts_chunk$set(echo=TRUE,autodeep=TRUE,cache.comments=FALSE,warning=FALSE,message=FALSE,cache.lazy=FALSE)
+```
+
+# Data pre-processing 
+
+```{r,echo=FALSE}
+library(openxlsx)
+library(lattice)
+library(quantreg)
+library(ggplot2)
+library(pscl)
+library(boot)
+library(MASS)
+library(sjPlot)
+library(nonnest2)
+library(vcd)
+library(AER)
+library(faraway)
+library(tidyverse)
+library(table1)
+library(RColorBrewer)
+# library(ggpubr)
+
+```
+
+```{r,echo=FALSE}
+params = as.list(NULL)
+params$days.cutoff = 12
+params$bin.cutoff = 0
+params$race = "All"
+params$occupation = FALSE
+params$patientsData = "PatientsData_merged_2020-07-15.xlsx"
+params$PainData = "PCM_Dates_merged_2020-06-29.xlsx"
+
+days.cutoff = as.numeric(params$days.cutoff)*(365/12)
+bin.cutoff = as.numeric(params$bin.cutoff) # from what number, pain considered as "no pain"?
+export.data = FALSE # save merged data as excel format? 
+
+## Load data
+patients_file=read.xlsx(xlsxFile=as.character(params$patientsData),sheet=1,detectDates=TRUE)
+pcm_file=read.xlsx(xlsxFile=as.character(params$PainData),sheet=1,detectDates=TRUE)
+
+colnames(patients_file)[which(colnames(patients_file)=="POVERTY")] = "Poverty"
+colnames(patients_file)[which(colnames(patients_file)=="VACANCY")] = "Vacancy"
+colnames(patients_file)[which(colnames(patients_file)=="WALKABILITY")] = "Walkability"
+colnames(patients_file)[which(colnames(patients_file)=="UNEMPLOYMENT")] = "Unemployment"
+colnames(pcm_file)[which(colnames(pcm_file)=="a_CCMA06")] = "Pain"
+```
+
+**_Patients selection_**.
+
+* Cleaned datasets with new dx_date (initial diagnosis date) was released - R21_Sample_wDxDate.     
+* Only TN considered. Other states were excluded. (3836 $\rightarrow$ 2628)      
+* Some duplicated samples were removed.   
+    - There are 43 duplicated profile keys in the merged data set.     
+    - e.g. profile key==90006  
+* There are a lot of missing values in the important variables such as Marital status, Occupation, Primary Payer, POVERTY, and etc. The missing values are systematic rather than just random, for example, if one patient is missing in one variable then it is also missing in the other variables. Therefore, we will only include the patients with no missing values in any of the important covariates.     
+
+* missing, NA -> Unknown     
+
+
+**_Pain data (PCM) selection_**.
+
+* Pain variable (a_CCMA06) observed after at least 60 days prior to dx_date only considered.   
+* Pain variable (a_CCMA06) within 365 days after the initial diagnosis date (dx_date) has been chosen.     
+* Mean was taken for Pain by patients.   
+
+**_Poverty variable collection_**.
+
+* "joined_zipcode" file merged to get data about poverty, vacancy, unemployment levels for more zip codes.   
+* Poverty data (from "joined_zipcode")
+
+    - For poverty variable, group mean used for each zip code.   
+    - Only 43 zip codes are documented in poverty file. On the other hand, there are 165 zip codes (TN) in Patients file. This produced many missing values for the poverty variable.  
+
+**_Further data selection_**.    
+
+* Race = "Other" or "Unknown" removed. (171 Samples excluded)
+* NA's in Pain variable removed. (247 samples excluded)
+
+```{r,echo=FALSE}
+pcm_profile_key=sort(unique(pcm_file$profile_key))
+patients_profile_key=sort(unique(patients_file$profile_key))
+
+cat(paste("Number of patients in the cohort (PatientsData) =",length(patients_profile_key)),"\n")
+pcm_subset = pcm_file[which((abs(pcm_file$dx_diff_days)<days.cutoff) & (pcm_file$dx_diff_days>(-60))),]
+
+pcm_new = cbind(aggregate(. ~ profile_key, pcm_subset[,c(1,3)], FUN=function(x){round(mean(x))}),
+                pcm_Q1st = aggregate(. ~ profile_key, pcm_subset[,c(1,3)], FUN=function(x){round(quantile(x)[2])})[,2],
+                pcm_Q2nd = aggregate(. ~ profile_key, pcm_subset[,c(1,3)], FUN=function(x){round(quantile(x)[3])})[,2],
+                pcm_Q3rd = aggregate(. ~ profile_key, pcm_subset[,c(1,3)], FUN=function(x){round(quantile(x)[4])})[,2],
+                pcm_min = aggregate(. ~ profile_key, pcm_subset[,c(1,3)], FUN=function(x){min(x)})[,2],
+                pcm_max = aggregate(. ~ profile_key, pcm_subset[,c(1,3)], FUN=function(x){max(x)})[,2],
+                pcm_bin = aggregate(. ~ profile_key, pcm_subset[,c(1,3)], FUN=function(x){as.numeric((min(x)>bin.cutoff))})[,2])
+colnames(pcm_new) = c(colnames(pcm_new)[1],paste(c("mean","Q1st","Q2nd","Q3rd","min","max","bin"),colnames(pcm_new)[2],sep="."))
+
+pcm_count = aggregate(. ~ profile_key, pcm_subset[,c(1,3)], FUN=function(x){length(x)})
+colnames(pcm_count)[2] = "count.Pain"
+pcm_var = merge(x=pcm_new,y=pcm_count,by="profile_key",all=T)
+profile_key = pcm_var$profile_key
+
+## Add chemo variable: afchemo / bfchemo (after/before chemo)
+afchemo = bfchemo = matrix(NA,ncol=ncol(pcm_var),nrow=length(profile_key))
+afchemo[,1] = bfchemo[,1] = profile_key
+colnames(bfchemo) = paste("bfchemo",colnames(pcm_var),sep=".")
+colnames(afchemo) = paste("afchemo",colnames(pcm_var),sep=".")
+colnames(bfchemo)[1] = colnames(pcm_var)[1]
+colnames(afchemo)[1] = colnames(pcm_var)[1]
+
+for (i in 1:length(profile_key)) {
+  x = profile_key[i]
+  temp_rows=which(pcm_subset$profile_key==x)
+  pcm_subset[temp_rows,]
+  
+  diff.date = (pcm_subset$dx_diff_days[temp_rows] - pcm_subset$chemo_diff_days[temp_rows])[1] # chemo.date - dx.date
+  if (is.na(diff.date)) {
+    next
+  } else if ((diff.date>(-365)) & (diff.date<(days.cutoff))) {
+    bfchemo.table = pcm_subset[temp_rows[which(pcm_subset$chemo_diff_days[temp_rows]<=0)],]
+    afchemo.table = pcm_subset[temp_rows[which(pcm_subset$chemo_diff_days[temp_rows]>0)],]
+
+    if (dim(bfchemo.table)[1]>0) {
+      bfchemo[i,2:ncol(bfchemo)] = c(round(mean(bfchemo.table$Pain)),
+                                     round(quantile(bfchemo.table$Pain)[2]),
+                                     round(quantile(bfchemo.table$Pain)[3]),
+                                     round(quantile(bfchemo.table$Pain)[4]),
+                                     min(bfchemo.table$Pain),
+                                     max(bfchemo.table$Pain),
+                                     as.numeric((min(bfchemo.table$Pain)>bin.cutoff)),
+                                     dim(bfchemo.table)[1])
+    }
+    if (dim(afchemo.table)[1]>0) {
+      afchemo[i,2:ncol(afchemo)] = c(round(mean(afchemo.table$Pain)),
+                                     round(quantile(afchemo.table$Pain)[2]),
+                                     round(quantile(afchemo.table$Pain)[3]),
+                                     round(quantile(afchemo.table$Pain)[4]),
+                                     min(afchemo.table$Pain),
+                                     max(afchemo.table$Pain),
+                                     as.numeric((min(afchemo.table$Pain)>bin.cutoff)),
+                                     dim(afchemo.table)[1])
+    }
+  }
+  # cat(paste(i),"\n")
+}
+pcm_var2 = merge(x=pcm_var,y=bfchemo,by="profile_key",all=T)
+pcm_var2 = merge(x=pcm_var2,y=afchemo,by="profile_key",all=T)
+# head(pcm_var2,n=20)
+
+## Add surgery variable: afsurgery / bfsurgery (after/before surgery)
+afsurgery = bfsurgery = matrix(NA,ncol=ncol(pcm_var),nrow=length(profile_key))
+afsurgery[,1] = bfsurgery[,1] = profile_key
+colnames(bfsurgery) = paste("bfsurgery",colnames(pcm_var),sep=".")
+colnames(afsurgery) = paste("afsurgery",colnames(pcm_var),sep=".")
+colnames(bfsurgery)[1] = colnames(pcm_var)[1]
+colnames(afsurgery)[1] = colnames(pcm_var)[1]
+
+for (i in 1:length(profile_key)) {
+  x = profile_key[i]
+  temp_rows=which(pcm_subset$profile_key==x)
+  pcm_subset[temp_rows,]
+  
+  diff.date = (pcm_subset$dx_diff_days[temp_rows] - pcm_subset$surgery_diff_days[temp_rows])[1] # surgery.date - dx.date
+  if (is.na(diff.date)) {
+    next
+  } else if ((diff.date>(-365)) & (diff.date<(days.cutoff))) {
+    bfsurgery.table = pcm_subset[temp_rows[which(pcm_subset$surgery_diff_days[temp_rows]<=0)],]
+    afsurgery.table = pcm_subset[temp_rows[which(pcm_subset$surgery_diff_days[temp_rows]>0)],]
+
+    if (dim(bfsurgery.table)[1]>0) {
+      bfsurgery[i,2:ncol(bfsurgery)] = c(round(mean(bfsurgery.table$Pain)),
+                                     round(quantile(bfsurgery.table$Pain)[2]),
+                                     round(quantile(bfsurgery.table$Pain)[3]),
+                                     round(quantile(bfsurgery.table$Pain)[4]),
+                                     min(bfsurgery.table$Pain),
+                                     max(bfsurgery.table$Pain),
+                                     as.numeric((min(bfsurgery.table$Pain)>bin.cutoff)),
+                                     dim(bfsurgery.table)[1])
+    }
+    if (dim(afsurgery.table)[1]>0) {
+      afsurgery[i,2:ncol(afsurgery)] = c(round(mean(afsurgery.table$Pain)),
+                                     round(quantile(afsurgery.table$Pain)[2]),
+                                     round(quantile(afsurgery.table$Pain)[3]),
+                                     round(quantile(afsurgery.table$Pain)[4]),
+                                     min(afsurgery.table$Pain),
+                                     max(afsurgery.table$Pain),
+                                     as.numeric((min(afsurgery.table$Pain)>bin.cutoff)),
+                                     dim(afsurgery.table)[1])
+    }
+  }
+  # cat(paste(i),"\n")
+}
+
+pcm_var2 = merge(x=pcm_var2,y=bfsurgery,by="profile_key",all=T)
+pcm_var2 = merge(x=pcm_var2,y=afsurgery,by="profile_key",all=T)
+# head(pcm_var2,n=20)
+
+dmd = merge(pcm_var2,patients_file,by="profile_key",all=T)
+# if (export.data) {
+#   write.xlsx(x=dmd,file=paste0(dataDir,"PCM_PatientsVar_merged_DX",days.cutoff,"daysRule_",today,".xlsx"))
+# }
+
+```
+
+
+```{r,echo=FALSE}
+## Define factor variables:
+# table(dmd$Tobacco.History)
+dmd$Tobacco.History = factor(dmd$Tobacco.History,levels=c("Never","Smoked","Unknown"))
+
+# table(dmd$Histology)
+dmd$Histology = factor(dmd$Histology,levels=c("ductal","lobular","Other","Unknown"))
+
+# table(dmd$Recurrence)
+dmd$Recurrence = factor(dmd$Recurrence,levels=c("disease-free","Recurrence","Unknown"))
+
+# table(dmd$Primary.Site.1)
+dmd$Primary.Site.1 = factor(dmd$Primary.Site.1,levels=c("Lower","Central","Upper","Unknown"))
+
+# table(dmd$Primary.Site.2)
+dmd$Primary.Site.2 = factor(dmd$Primary.Site.2,levels=c("Inner","Midline","Outer","Overlapping","Unknown"))
+
+# table(dmd$HER2)
+dmd$HER2[(dmd$HER2 %in% c("Borderline","Test.not.done","Unknown"))] = "Unknown"
+dmd$HER2 = factor(dmd$HER2,levels=c("Negative.Normal","Positive.Elevated","Unknown"))
+
+# table(dmd$ER)
+dmd$ER[(dmd$ER %in% c("Test.not.done","Unknown"))] = "Unknown"
+dmd$ER = factor(dmd$ER,levels=c("Negative.Normal","Positive.Elevated","Unknown"))
+
+# table(dmd$PR)
+dmd$PR[(dmd$PR %in% c("Test.not.done","Unknown"))] = "Unknown"
+dmd$PR = factor(dmd$PR,levels=c("Negative.Normal","Positive.Elevated","Unknown"))
+
+# table(dmd$Metastasis)
+dmd$Metastasis = factor(dmd$Metastasis,levels=c("No","Yes"))
+
+# Relevel factor variables
+dmd$race.f = relevel(factor(dmd$race.f),"White")
+# table(dmd0$race.f)
+
+dmd$marital.status.f = relevel(factor(dmd$marital.status.f),"Married")
+dmd$marital.status.f = factor(dmd$marital.status.f, levels=c("Married","Single","Divorced","Widowed","Unknown"))
+# table(dmd$marital.status.f)
+
+dmd$Usual.Occupation.f = relevel(factor(dmd$Usual.Occupation.f),"Employed")
+# table(dmd0$Usual.Occupation.f)
+
+dmd$Primary.Payer.f = relevel(factor(dmd$Primary.Payer.f),"Insurance")
+# table(dmd0$Primary.Payer.f)
+
+# table(dmd$race.f)
+
+## Usual Occupation
+occupation = dmd$Usual.Occupation.f
+occupation[which(occupation=="Disabled")] = "Unemployed"
+if (params$occupation) {
+  occupation[which(occupation=="Retired")] = "Unemployed"
+}
+occupation.f = factor(occupation)
+dmd$Usual.Occupation.f2 = occupation.f
+# table(dmd$Usual.Occupation.f2)
+
+## Primary Payer
+insurance = dmd$Primary.Payer.f
+insurance[which(insurance=="Private")] = "Insurance"
+insurance.f = factor(insurance)
+dmd$Primary.Payer.f2 = insurance.f
+# table(dmd$Primary.Payer.f2)
+
+## Marital Status
+marriage = dmd$marital.status.f
+marriage[which(marriage=="Widowed")] = "Single"
+marriage.f = factor(marriage)
+dmd$marital.status.f2 = marriage.f
+# table(dmd$marital.status.f2)
+
+## Poverty -> factor (low/high)
+Poverty = rep("low",dim(dmd)[1])
+Poverty[which(dmd$Poverty>median(dmd$Poverty,na.rm=T))] = "high"
+Poverty.f = factor(Poverty)
+Poverty.f = relevel(Poverty.f,"low")
+dmd$Poverty.f = Poverty.f
+# table(dmd$Poverty.f)
+
+## Stage
+dmd$stage.f = factor(dmd$stage.f)
+dmd$stage.f = relevel(dmd$stage.f,"1")
+
+## Age
+age = rep("Low",dim(dmd)[1])
+age[which(dmd$age.f==1)] = "High"
+dmd$age.f = factor(age)
+dmd$age.f = relevel(dmd$age.f,"Low")
+
+## Chemo -> factor (0=no, 1=yes)
+chemo = rep("Untreated",dim(dmd)[1])
+chemo[which(dmd$afchemo.count.Pain>0)] = "Treated"
+chemo.f = factor(chemo)
+chemo.f = relevel(chemo.f,"Treated")
+dmd$chemo.f = chemo.f
+# table(dmd$chemo.f)
+
+## surgery -> factor (0=no, 1=yes)
+surgery = rep("Untreated",dim(dmd)[1])
+surgery[which(dmd$afsurgery.count.Pain>0)] = "Treated"
+surgery.f = factor(surgery)
+surgery.f = relevel(surgery.f,"Treated")
+dmd$surgery.f = surgery.f
+# table(dmd$surgery.f)
+
+if (! params$race=="All") {
+  dmd = dmd[which(dmd$race.f==params$race),]
+}
+
+unknownRaceN = length(which(dmd$race.f %in% c("Other","Unknown")))
+dmd = dmd[-which(dmd$race.f %in% c("Other","Unknown")),]
+cat(paste("Unknown and Other in Race removed (",unknownRaceN,"), Black and White remained N =",dim(dmd)[1]),"\n")
+dmd$race.f = factor(dmd$race.f)
+
+## Re-name variables
+# colnames(cdmd.pvt)[which(grepl(pattern="surgery",colnames(cdmd.pvt))==T)]
+colnames(dmd)[which(colnames(dmd)=="Usual.Occupation.f2")] = "Occupation"
+colnames(dmd)[which(colnames(dmd)=="marital.status.f2")] = "Marital.status"
+colnames(dmd)[which(colnames(dmd)=="Primary.Payer.f2")] = "Insurance.type"
+colnames(dmd)[which(colnames(dmd)=="race.f")] = "Race"
+colnames(dmd)[which(colnames(dmd)=="stage.f")] = "Cancer.stage"
+colnames(dmd)[which(colnames(dmd)=="age.f")] = "Age"
+colnames(dmd)[which(colnames(dmd)=="chemo.f")] = "Chemo"
+colnames(dmd)[which(colnames(dmd)=="surgery.f")] = "Surgery"
+colnames(dmd)[which(colnames(dmd)=="Tobacco.History")] = "Tobacco.history"
+```
+
+
+```{r,echo=FALSE}
+## Select samples with Poverty values
+dmd.pvt = dmd[which(!is.na(dmd$Poverty)==T),]
+zipcode.pvt = sort(unique(dmd.pvt$zip))
+cat(paste("Number of patients with Poverty reported =",dim(dmd.pvt)[1]),"\n")
+
+dmd.pvt = dmd.pvt[-which(dmd.pvt$Poverty>70),]
+dmd.pvt = dmd.pvt[-which((dmd.pvt$Vacancy>40) & (dmd.pvt$mean.Pain<2)),]
+cat(paste("Three outliers excluded"),"\n")
+
+cdmd.pvt = dmd.pvt
+colnames(cdmd.pvt)[which(grepl(pattern="mean",colnames(cdmd.pvt))==T)] = c("Pain","Pain.bfchemo","Pain.afchemo","Pain.bfsurgery","Pain.afsurgery")
+NANs = length(which(is.na(cdmd.pvt$Pain)))
+cdmd.pvt = cdmd.pvt[which(!is.na(cdmd.pvt$Pain)),]
+cat(paste("NAs in Pain removed (final dataset) =",dim(cdmd.pvt)[1]," (NAs =",NANs,")"),"\n")
+cat(paste("Number of unique zip code =",length(unique(cdmd.pvt$zip))),"\n")
+
+cdmd.pvt$Poverty.q = rep("Low",nrow(cdmd.pvt))
+cdmd.pvt$Poverty.q[which(cdmd.pvt$Poverty>quantile(cdmd.pvt$Poverty,p=0.3))] = "Medium"
+cdmd.pvt$Poverty.q[which(cdmd.pvt$Poverty>quantile(cdmd.pvt$Poverty,p=0.7))] = "High"
+```
+
+
+```{r}
+final.data <- 
+  cdmd.pvt %>%
+  select("Pain",
+         "Poverty","Vacancy",
+         "Occupation","Marital.status","Insurance.type",
+         "Cancer.stage","Chemo","Surgery",
+         "Race","Age",
+         "Histology",
+         "Primary.Site.1","Primary.Site.2",
+         "HER2","ER","PR","Metastasis")
+```
+
+
+# Summary of variables
+
+## Table 1
+
+```{r,echo=FALSE,eval=FALSE}
+respvar = "Pain"
+explvars = c("Pain","Poverty","Vacancy",
+             "Occupation","Marital.status","Insurance.type",
+             "Cancer.stage","Chemo","Surgery",
+             "Race","Age")
+
+table1(as.formula(paste(" ~ ",paste(c(respvar,explvars),collapse=" + "))), data=final.data)
+```
+
+```{r,echo=FALSE}
+respvar = "Pain"
+explvars = c("Pain","Poverty","Vacancy",
+             "Occupation","Marital.status","Insurance.type",
+             "Cancer.stage","Chemo","Surgery",
+             "Race","Age",
+             "Histology",
+             "Primary.Site.1","Primary.Site.2",
+             "HER2","ER","PR","Metastasis")
+
+table1(as.formula(paste(" ~ ",paste(c(respvar,explvars),collapse=" + "))), data=final.data)
+```
+
+
+```{r,echo=FALSE,eval=FALSE}
+table(final.data)
+summary(final.data)
+do.call("rbind",apply(final.data,2,get_summary))
+
+get_summary = function(x) {
+  tab = table(x)
+  names(tab)
+  
+  summ = t(t(table(x)))
+  names(summ)
+}
+x = final.data$Marital.status
+t(t(table(final.data$Marital.status)))
+
+## Try htmlTable
+htmlTable(table.count,
+          rgroup = c("","",gsub(pattern="[.]",replacement=" ",x=explvars[2:length(explvars)])),
+          rnames = tablevars,
+          n.rgroup = c(1,1,4,4,3,3,2,2,2,2,3),
+          cgroup = c("Unadjusted","Adjusted"),
+          n.cgroup = c(3,3))
+
+
+```
+
+## Distributions
+
+**_Pain variable (Pain)_**:
+
+* For each patient, multiple pains were reported at different dates after their initial diagnosis dates. As a representative value of these multiple observations, average was computed for each patient within the 365-day window. 
+
+```{r,echo=FALSE,fig.width=8}
+# pdf(6,6,file=paste("Pain_hist.pdf"))
+barplot(table(cdmd.pvt$Pain),main=paste("Pain intensity"),ylab="Frequency")
+# legend("topright",bty="n",legend=c(paste("Mean   =",round(mean(cdmd.pvt$Pain),digits=2)),
+                                   # paste("Median =",round(median(cdmd.pvt$Pain),digits=2))))
+# dev.off()
+
+```
+
+**_Poverty variable_**:
+
+* Poverty was measured at zip code level. Since we have 34 different zip code, Poverty variable also has 34 unique values each of which corresponds to each zip code.      
+
+```{r,echo=FALSE,fig.width=8}
+
+hist(cdmd.pvt$Poverty,main="Poverty")
+cat(paste("Number of zipcode =",length(unique(cdmd.pvt$zip))),"\n")
+cat(paste("Median of Poverty =",round(median(cdmd.pvt$Poverty),digits=3)),"\n")
+
+```
+
+**_Vacancy variable_**:
+
+```{r,echo=FALSE,fig.width=8}
+
+hist(cdmd.pvt$Vacancy,main="Vacancy")
+cat(paste("Number of zipcode =",length(unique(cdmd.pvt$zip))),"\n")
+cat(paste("Median of Vacancy =",round(median(cdmd.pvt$Vacancy),digits=3)),"\n")
+
+```
+
+## Poverty
+
+* Pain ~ Poverty
+
+```{r,echo=FALSE}
+p.glm = glm(Pain ~ Poverty, data = final.data, family = "poisson")
+# summary(p.glm)
+fhat = function(x) {
+  exp(p.glm$coefficients[1]+p.glm$coefficients[2]*x)
+}
+
+meandata = data.frame(Poverty = aggregate(Poverty ~ zip,cdmd.pvt,mean)$Poverty,
+                      Pain = aggregate(Pain ~ zip,cdmd.pvt,mean)$Pain,
+                      zip = aggregate(Poverty ~ zip,cdmd.pvt,mean)$zip)
+meandata$size = sapply(meandata$zip,function(x) length(which(cdmd.pvt$zip==x)))
+# hist(round(meandata$Pain))
+# summary(glm(round(meandata$Pain) ~ meandata$Poverty,family = "poisson"))
+# summary(glm.nb(round(meandata$Pain) ~ meandata$Poverty))
+
+# par(mfrow=c(1,2))
+cex = exp(2*(meandata$size/(max(meandata$size) - min(meandata$size) + 1)))
+
+pdf(6,6,file=paste("Pain_poverty_plot.pdf"))
+par(mar=c(4,4,2,2))
+plot(x=meandata$Poverty,y=meandata$Pain,
+     xlim=c(0,70),ylim=c(0,6.5),col=brewer.pal(n=11,"BrBG")[9],
+     axes=F,
+     xlab=NA,ylab=NA,
+     cex=cex,lwd=2.5)
+box()
+abline(0, 0, lty=1, col="grey")
+abline(v=0, lty=1, col="grey")
+# axis(side=1, tck=-.015,labels=NA)
+# axis(side=1, lwd=0, line=-1, cex=0.2,cex.axis=0.9)
+axis(side=1, tck=-0.015,lwd=0,line=-.5,cex.axis=1.5)
+axis(side=2, tck=-0.015,lwd=0,line=-.8,cex.axis=1.5)
+mtext(side=1, "Poverty", line=2.5, cex=1.5)
+mtext(side=2, "Pain average", line=2, cex=1.5)
+
+# points(x=meandata$Poverty,y=meandata$Pain,
+#        cex=cex,lwd=1.5)
+x=seq(0,70,by=1)
+points(x=x,y=fhat(x),type="l",lwd=3,
+       col=brewer.pal(n=9,"YlOrRd")[7])
+dev.off()
+
+# par(mfrow=c(3,3))
+pdf(6,6,file=paste("Pain_poverty_legend.pdf"))
+par(mar=c(4,4,2,2))
+plot(x=c(0,1),y=c(0,1))
+cbind(meandata$size,cex)
+
+x = c(1,20,40,60,80)
+y = c(1,1.5,2.5,4,6)
+points(x=rep(0.4,length(x)),
+       y=seq(0.8,0.4,length.out=length(x)),
+       cex=y,lwd=2.5,col=brewer.pal(n=11,"BrBG")[9])
+text(x=rep(0.55,length(x)),
+     y=seq(0.8,0.4,length.out=length(x)),
+     labels=x,cex=1.5)
+dev.off()
+
+```
+
+## Vacancy
+
+* Pain ~ Vacancy
+
+```{r,echo=FALSE}
+p.glm = glm(Pain ~ Vacancy, data = final.data, family = "poisson")
+# summary(p.glm)
+fhat = function(x) {
+  exp(p.glm$coefficients[1]+p.glm$coefficients[2]*x)
+}
+
+meandata = data.frame(Vacancy = aggregate(Vacancy ~ zip,cdmd.pvt,mean)$Vacancy,
+                      Pain = aggregate(Pain ~ zip,cdmd.pvt,mean)$Pain,
+                      zip = aggregate(Vacancy ~ zip,cdmd.pvt,mean)$zip)
+meandata$size = sapply(meandata$zip,function(x) length(which(cdmd.pvt$zip==x)))
+# hist(round(meandata$Pain))
+# summary(glm(round(meandata$Pain) ~ meandata$Vacancy,family = "poisson"))
+# summary(glm.nb(round(meandata$Pain) ~ meandata$Vacancy))
+
+# par(mfrow=c(1,2))
+cex = exp(2*(meandata$size/(max(meandata$size) - min(meandata$size) + 1)))
+
+pdf(6,6,file=paste("Pain_Vacancy_plot.pdf"))
+par(mar=c(4,4,2,2))
+plot(x=meandata$Vacancy,y=meandata$Pain,
+     xlim=c(0,60),ylim=c(0,6.5),col=brewer.pal(n=11,"BrBG")[9],
+     axes=F,
+     xlab=NA,ylab=NA,
+     cex=cex,lwd=2.5)
+box()
+abline(0, 0, lty=1, col="grey")
+abline(v=0, lty=1, col="grey")
+# axis(side=1, tck=-.015,labels=NA)
+# axis(side=1, lwd=0, line=-1, cex=0.2,cex.axis=0.9)
+axis(side=1, tck=-0.015,lwd=0,line=-.5,cex.axis=1.5)
+axis(side=2, tck=-0.015,lwd=0,line=-.8,cex.axis=1.5)
+mtext(side=1, "Vacancy", line=2.5, cex=1.5)
+mtext(side=2, "Pain average", line=2, cex=1.5)
+
+x=seq(0,53,by=1)
+points(x=x,y=fhat(x),type="l",lwd=3,
+       col=brewer.pal(n=9,"YlOrRd")[7])
+dev.off()
+
+```
+
+```{r,echo=FALSE}
+p.glm = glm(Pain ~ Vacancy, data = cdmd.pvt, family = "poisson")
+# summary(p.glm)
+# summary(zeroinfl(Pain ~ Poverty, data = cdmd.pvt, dist="poisson"))
+fhat = function(x) {
+  exp(p.glm$coefficients[1]+p.glm$coefficients[2]*x)
+}
+
+meandata = data.frame(Vacancy = aggregate(Vacancy ~ zip,cdmd.pvt,mean)$Vacancy,
+                      Pain = aggregate(Pain ~ zip,cdmd.pvt,mean)$Pain,
+                      zip = aggregate(Vacancy ~ zip,cdmd.pvt,mean)$zip)
+meandata$size = sapply(meandata$zip,function(x) length(which(cdmd.pvt$zip==x)))
+# hist(round(meandata$Pain))
+# summary(glm(round(meandata$Pain) ~ meandata$Vacancy,family = "poisson"))
+# summary(glm.nb(round(meandata$Pain) ~ meandata$Vacancy))
+
+par(mfrow=c(1,2))
+cex = exp(2*(meandata$size/(max(meandata$size) - min(meandata$size) + 1)))
+# pdf(6,6,file=paste("Pain_Vacancy_plot.pdf"))
+plot(x=meandata$Vacancy,y=meandata$Pain,cex=cex,xlab="Vacancy",ylab="Pain average")
+# plot(x=aggregate(Vacancy ~ zip,cdmd.pvt,mean)$Vacancy,
+#      y=aggregate(Pain ~ zip,cdmd.pvt,mean)$Pain,
+#      xlab="Vacancy",ylab=paste(pain.type,"Pain mean within Zip"))
+x=seq(0,80,by=1)
+points(x=x,y=fhat(x),type="l",lwd=2)
+# dev.off()
+```
+
+
+```{r,echo=FALSE}
+respvar = "Pain"
+
+explvars.1 = c("Poverty","Occupation","Marital.status","Insurance.type",
+               "Cancer.stage","Chemo","Surgery",
+               "Race","Age")
+explvars.2 = c("Vacancy","Occupation","Marital.status","Insurance.type",
+               "Cancer.stage","Chemo","Surgery",
+               "Race","Age")
+explvars = c("Poverty","Vacancy",
+             "Occupation","Marital.status","Insurance.type",
+             "Cancer.stage","Chemo","Surgery",
+             "Race","Age")
+full.formula.1 = as.formula(paste(respvar," ~ ",paste(explvars.1,collapse=" + ")))
+full.formula.2 = as.formula(paste(respvar," ~ ",paste(explvars.2,collapse=" + ")))
+full.formula = as.formula(paste(respvar," ~ ",paste(explvars,collapse=" + ")))
+```
+
+
+```{r,echo=FALSE,eval=FALSE}
+
+## Get the ordered explanatory variables in full model
+full.model = zeroinfl(full.formula, data = final.data, dist="poisson")
+full.summary = round(cbind(exp(coef(full.model)),exp(confint(full.model)),do.call("rbind",coef(summary(full.model)))[,c(4)]),digits=3)
+table.explvars = rownames(full.summary)
+
+final.1 = zeroinfl(full.formula.1, data = final.data, dist="poisson")
+final.2 = zeroinfl(full.formula.2, data = final.data, dist="poisson")
+
+# tab_model(final, digits = 3,
+#           title = "Final",
+#           show.zeroinf=TRUE,show.intercept=TRUE,
+#           show.se=TRUE, show.ci=FALSE,collapse.se=FALSE, 
+#           show.p = TRUE, p.style="numeric_stars")
+
+```
+
+
+```{r,echo=FALSE}
+# exp(confint(final)) # confidence interval
+final.adj.1 = round(cbind(exp(coef(final.1)),exp(confint(final.1)),do.call("rbind",coef(summary(final.1)))[,c(4)]),digits=3)
+colnames(final.adj.1)[c(1,4)] = c("Estimate","P")
+final.adj.2 = round(cbind(exp(coef(final.2)),exp(confint(final.2)),do.call("rbind",coef(summary(final.2)))[,c(4)]),digits=3)
+colnames(final.adj.2)[c(1,4)] = c("Estimate","P")
+
+## Final model (Unadjusted)
+final.unadj.list = as.list(NULL)
+formula.base = Pain ~ Poverty
+for (i in 1:length(explvars)) {
+  formula.new = as.formula(paste(sub("Poverty",replacement=explvars[i],as.character(formula.base))[c(2,3)],collapse=" ~ "))
+  model.unadj = zeroinfl(formula.new, data = final.data, dist="poisson")
+  summary.unadj = round(cbind(exp(coef(model.unadj)),exp(confint(model.unadj)),do.call("rbind",coef(summary(model.unadj)))[,c(4)]),digits=3)
+  colnames(summary.unadj)[c(1,4)] = c("Estimate","P")
+  colnames(summary.unadj) = paste("Unadj",colnames(summary.unadj),sep=".")
+  final.unadj.list[[i]] <- summary.unadj
+  rm(summary.unadj)
+}
+final.unadj = do.call("rbind",final.unadj.list)
+final.unadj = final.unadj[which(grepl(pattern="Intercept",rownames(final.unadj))==F),]
+
+## Merge
+final.adj.1 = as.data.frame(final.adj.1)
+final.adj.1$vars = rownames(final.adj.1)
+final.adj.2 = as.data.frame(final.adj.2)
+final.adj.2$vars = rownames(final.adj.2)
+final.unadj = as.data.frame(final.unadj)
+final.unadj$vars = rownames(final.unadj)
+
+final.table0 = merge(final.adj.1,final.adj.2,by="vars",all=T)
+final.table1 = merge(final.table0,final.unadj,by="vars",all=T)
+# which(! table.explvars %in% final.table0$vars)
+# which(! final.table0$vars %in% table.explvars)
+final.table = final.table1[match(table.explvars,final.table1$vars),c(10:13,2:9)]
+rownames(final.table) = table.explvars
+
+final.table$Unadj.CI = paste(final.table$`Unadj.2.5 %`,final.table$`Unadj.97.5 %`,sep="-")
+final.table$CI.x = paste(final.table$`2.5 %.x`,final.table$`97.5 %.x`,sep="-")
+final.table$CI.y = paste(final.table$`2.5 %.y`,final.table$`97.5 %.y`,sep="-")
+final.table <- final.table %>%
+  select(Unadj.Estimate,Unadj.CI,Unadj.P,Estimate.x,CI.x,P.x,Estimate.y,CI.y,P.y)
+
+transform.p = function(x) {
+  y = as.character(x)
+  y[which(y==0)] = "<.001"
+  return(y)
+}
+final.table$Unadj.P = transform.p(final.table$Unadj.P)
+final.table$P.x = transform.p(final.table$P.x)
+final.table$P.y = transform.p(final.table$P.y)
+```
+
+## Poisson count model
+```{r,echo=FALSE}
+## tables for publication
+library(htmlTable)
+# library(Gmisc)
+vars.list = sapply(explvars[-c(1,2)],function(x) levels(final.data[,which(colnames(final.data)==x)]))
+vars.list = lapply(vars.list,function(x) {x[1]<-paste(x[1],"(reference)"); return(x)})
+tablevars = c("(Intercept)","Poverty","Vacancy",unlist(vars.list)) # all variables that will be printed in the table
+
+table.count = final.table[which(grepl("count",rownames(final.table))),]
+rownames(table.count) = sapply(rownames(table.count),function(x) unlist(strsplit(x,split="count_"))[2]) # extract count model
+
+table.count <-
+  table.count %>%
+  add_row(,.before=which(grepl(pattern="Retired",rownames(table.count)))) %>%
+  add_row(,.before=1+which(grepl(pattern="Single",rownames(table.count)))) %>%
+  add_row(,.before=2+which(grepl(pattern="Medicaid",rownames(table.count)))) %>%
+  add_row(,.before=3+which(grepl(pattern="stage2",rownames(table.count)))) %>%
+  add_row(,.before=4+which(grepl(pattern="Chemo",rownames(table.count)))) %>%
+  add_row(,.before=5+which(grepl(pattern="Surgery",rownames(table.count)))) %>%
+  add_row(,.before=6+which(grepl(pattern="Black",rownames(table.count)))) %>%
+  add_row(,.before=7+which(grepl(pattern="Age",rownames(table.count))))
+colnames(table.count) = c("Estimate","95% CI","P-value",
+                          "Estimate","95% CI","P-value",
+                          "Estimate","95% CI","P-value")
+
+htmlTable(table.count,
+          rgroup = c("","","",gsub(pattern="[.]",replacement=" ",x=explvars[3:length(explvars)])),
+          rnames = tablevars,
+          n.rgroup = c(1,1,1,sapply(vars.list,length)),
+          cgroup = c("Unadjusted","Adjusted","Adjusted"),
+          n.cgroup = c(3,3,3))
+# library(kableExtra)
+# kable(table.count) %>%
+#   kable_styling("striped") %>%
+#   add_header_above(c(" " = 1, "Unadjusted" = 3, "Adjusted" = 3))
+
+```
+
+
+## Inflation model
+```{r,echo=FALSE}
+table.zero = final.table[which(grepl("zero",rownames(final.table))),]
+rownames(table.zero) = sapply(rownames(table.zero),function(x) unlist(strsplit(x,split="zero_"))[2]) # extract zero model
+
+table.zero <-
+  table.zero %>%
+  add_row(,.before=which(grepl(pattern="Retired",rownames(table.zero)))) %>%
+  add_row(,.before=1+which(grepl(pattern="Single",rownames(table.zero)))) %>%
+  add_row(,.before=2+which(grepl(pattern="Medicaid",rownames(table.zero)))) %>%
+  add_row(,.before=3+which(grepl(pattern="stage2",rownames(table.zero)))) %>%
+  add_row(,.before=4+which(grepl(pattern="Chemo",rownames(table.zero)))) %>%
+  add_row(,.before=5+which(grepl(pattern="Surgery",rownames(table.zero)))) %>%
+  add_row(,.before=6+which(grepl(pattern="Black",rownames(table.zero)))) %>%
+  add_row(,.before=7+which(grepl(pattern="Age",rownames(table.zero))))
+colnames(table.zero) = c("Estimate","95% CI","P-value",
+                          "Estimate","95% CI","P-value",
+                          "Estimate","95% CI","P-value")
+
+htmlTable(table.zero,
+          rgroup = c("","","",gsub(pattern="[.]",replacement=" ",x=explvars[3:length(explvars)])),
+          rnames = tablevars,
+          n.rgroup = c(1,1,1,sapply(vars.list,length)),
+          cgroup = c("Unadjusted","Adjusted","Adjusted"),
+          n.cgroup = c(3,3,3))
+
+# kable(table.zero) %>%
+#   kable_styling("striped") %>%
+#   add_header_above(c(" " = 1, "Unadjusted" = 3, "Adjusted" = 3))
+```
+
+# Basic model + more biomarker variables
+
+```{r,echo=FALSE}
+respvar = "Pain"
+
+explvars.1 = c("Poverty","Occupation","Marital.status","Insurance.type",
+               "Cancer.stage","Chemo","Surgery",
+               "Race","Age",
+               "Histology",
+               "Primary.Site.1","Primary.Site.2",
+               "HER2","ER","PR","Metastasis")
+
+explvars.2 = c("Vacancy","Occupation","Marital.status","Insurance.type",
+               "Cancer.stage","Chemo","Surgery",
+               "Race","Age",
+               "Histology",
+               "Primary.Site.1","Primary.Site.2",
+               "HER2","ER","PR","Metastasis")
+
+explvars = c("Poverty","Vacancy",
+             "Occupation","Marital.status","Insurance.type",
+             "Cancer.stage","Chemo","Surgery",
+             "Race","Age",
+             "Histology",
+             "Primary.Site.1","Primary.Site.2",
+             "HER2","ER","PR","Metastasis")
+
+full.formula.1 = as.formula(paste(respvar," ~ ",paste(explvars.1,collapse=" + ")))
+full.formula.2 = as.formula(paste(respvar," ~ ",paste(explvars.2,collapse=" + ")))
+full.formula = as.formula(paste(respvar," ~ ",paste(explvars,collapse=" + ")))
+```
+
+```{r,echo=FALSE}
+## Get the ordered explanatory variables in full model
+full.model = zeroinfl(full.formula, data = final.data, dist="poisson")
+full.summary = round(cbind(exp(coef(full.model)),exp(confint(full.model)),do.call("rbind",coef(summary(full.model)))[,c(4)]),digits=3)
+table.explvars = rownames(full.summary)
+
+final.1 = zeroinfl(full.formula.1, data = final.data, dist="poisson")
+final.2 = zeroinfl(full.formula.2, data = final.data, dist="poisson")
+
+# tab_model(final, digits = 3,
+#           title = "Final",
+#           show.zeroinf=TRUE,show.intercept=TRUE,
+#           show.se=TRUE, show.ci=FALSE,collapse.se=FALSE, 
+#           show.p = TRUE, p.style="numeric_stars")
+
+```
+
+
+```{r,echo=FALSE}
+# exp(confint(final)) # confidence interval
+final.adj.1 = round(cbind(exp(coef(final.1)),exp(confint(final.1)),do.call("rbind",coef(summary(final.1)))[,c(4)]),digits=3)
+colnames(final.adj.1)[c(1,4)] = c("Estimate","P")
+final.adj.2 = round(cbind(exp(coef(final.2)),exp(confint(final.2)),do.call("rbind",coef(summary(final.2)))[,c(4)]),digits=3)
+colnames(final.adj.2)[c(1,4)] = c("Estimate","P")
+
+## Final model (Unadjusted)
+final.unadj.list = as.list(NULL)
+formula.base = Pain ~ Poverty
+for (i in 1:length(explvars)) {
+  formula.new = as.formula(paste(sub("Poverty",replacement=explvars[i],as.character(formula.base))[c(2,3)],collapse=" ~ "))
+  model.unadj = zeroinfl(formula.new, data = final.data, dist="poisson")
+  summary.unadj = round(cbind(exp(coef(model.unadj)),exp(confint(model.unadj)),do.call("rbind",coef(summary(model.unadj)))[,c(4)]),digits=3)
+  colnames(summary.unadj)[c(1,4)] = c("Estimate","P")
+  colnames(summary.unadj) = paste("Unadj",colnames(summary.unadj),sep=".")
+  final.unadj.list[[i]] <- summary.unadj
+  rm(summary.unadj)
+}
+final.unadj = do.call("rbind",final.unadj.list)
+final.unadj = final.unadj[which(grepl(pattern="Intercept",rownames(final.unadj))==F),]
+
+## Merge
+final.adj.1 = as.data.frame(final.adj.1)
+final.adj.1$vars = rownames(final.adj.1)
+final.adj.2 = as.data.frame(final.adj.2)
+final.adj.2$vars = rownames(final.adj.2)
+final.unadj = as.data.frame(final.unadj)
+final.unadj$vars = rownames(final.unadj)
+
+final.table0 = merge(final.adj.1,final.adj.2,by="vars",all=T)
+final.table1 = merge(final.table0,final.unadj,by="vars",all=T)
+# which(! table.explvars %in% final.table0$vars)
+# which(! final.table0$vars %in% table.explvars)
+final.table = final.table1[match(table.explvars,final.table1$vars),c(10:13,2:9)]
+rownames(final.table) = table.explvars
+
+final.table$Unadj.CI = paste(final.table$`Unadj.2.5 %`,final.table$`Unadj.97.5 %`,sep="-")
+final.table$CI.x = paste(final.table$`2.5 %.x`,final.table$`97.5 %.x`,sep="-")
+final.table$CI.y = paste(final.table$`2.5 %.y`,final.table$`97.5 %.y`,sep="-")
+final.table <- final.table %>%
+  select(Unadj.Estimate,Unadj.CI,Unadj.P,Estimate.x,CI.x,P.x,Estimate.y,CI.y,P.y)
+
+transform.p = function(x) {
+  y = as.character(x)
+  y[which(y==0)] = "<.001"
+  return(y)
+}
+final.table$Unadj.P = transform.p(final.table$Unadj.P)
+final.table$P.x = transform.p(final.table$P.x)
+final.table$P.y = transform.p(final.table$P.y)
+```
+
+## Poisson count model:
+```{r,echo=FALSE}
+## tables for publication
+library(htmlTable)
+# library(Gmisc)
+vars.list = sapply(explvars[-c(1,2)],function(x) levels(final.data[,which(colnames(final.data)==x)]))
+vars.list = lapply(vars.list,function(x) {x[1]<-paste(x[1],"(reference)"); return(x)})
+tablevars = c("(Intercept)","Poverty","Vacancy",unlist(vars.list)) # all variables that will be printed in the table
+
+table.count = final.table[which(grepl("count",rownames(final.table))),]
+rownames(table.count) = sapply(rownames(table.count),function(x) unlist(strsplit(x,split="count_"))[2]) # extract count model
+
+table.count <-
+  table.count %>%
+  add_row(,.before=which(grepl(pattern="Retired",rownames(table.count)))) %>%
+  add_row(,.before=1+which(grepl(pattern="Single",rownames(table.count)))) %>%
+  add_row(,.before=2+which(grepl(pattern="Medicaid",rownames(table.count)))) %>%
+  add_row(,.before=3+which(grepl(pattern="stage2",rownames(table.count)))) %>%
+  add_row(,.before=4+which(grepl(pattern="Chemo",rownames(table.count)))) %>%
+  add_row(,.before=5+which(grepl(pattern="Surgery",rownames(table.count)))) %>%
+  add_row(,.before=6+which(grepl(pattern="Black",rownames(table.count)))) %>%
+  add_row(,.before=7+which(grepl(pattern="Age",rownames(table.count)))) %>%
+  add_row(,.before=8+which(grepl(pattern="lobular",rownames(table.count)))) %>%
+  add_row(,.before=9+which(grepl(pattern="Central",rownames(table.count)))) %>%
+  add_row(,.before=10+which(grepl(pattern="Midline",rownames(table.count)))) %>%
+  add_row(,.before=11+which(grepl(pattern="HER2Positive",rownames(table.count)))) %>%
+  add_row(,.before=12+which(grepl(pattern="ERPositive",rownames(table.count)))) %>%
+  add_row(,.before=13+which(grepl(pattern="PRPositive",rownames(table.count)))) %>%
+  add_row(,.before=14+which(grepl(pattern="Metastasis",rownames(table.count))))
+colnames(table.count) = c("Estimate","95% CI","P-value",
+                          "Estimate","95% CI","P-value",
+                          "Estimate","95% CI","P-value")
+
+htmlTable(table.count,
+          rgroup = c("","","",gsub(pattern="[.]",replacement=" ",x=explvars[3:length(explvars)])),
+          rnames = tablevars,
+          n.rgroup = c(1,1,1,sapply(vars.list,length)),
+          cgroup = c("Unadjusted","Adjusted","Adjusted"),
+          n.cgroup = c(3,3,3))
+# library(kableExtra)
+# kable(table.count) %>%
+#   kable_styling("striped") %>%
+#   add_header_above(c(" " = 1, "Unadjusted" = 3, "Adjusted" = 3))
+
+```
+
+
+## Inflation model:
+```{r,echo=FALSE}
+table.zero = final.table[which(grepl("zero",rownames(final.table))),]
+rownames(table.zero) = sapply(rownames(table.zero),function(x) unlist(strsplit(x,split="zero_"))[2]) # extract zero model
+
+table.zero <-
+  table.zero %>%
+  add_row(,.before=which(grepl(pattern="Retired",rownames(table.zero)))) %>%
+  add_row(,.before=1+which(grepl(pattern="Single",rownames(table.zero)))) %>%
+  add_row(,.before=2+which(grepl(pattern="Medicaid",rownames(table.zero)))) %>%
+  add_row(,.before=3+which(grepl(pattern="stage2",rownames(table.zero)))) %>%
+  add_row(,.before=4+which(grepl(pattern="Chemo",rownames(table.zero)))) %>%
+  add_row(,.before=5+which(grepl(pattern="Surgery",rownames(table.zero)))) %>%
+  add_row(,.before=6+which(grepl(pattern="Black",rownames(table.zero)))) %>%
+  add_row(,.before=7+which(grepl(pattern="Age",rownames(table.zero)))) %>%
+  add_row(,.before=8+which(grepl(pattern="lobular",rownames(table.zero)))) %>%
+  add_row(,.before=9+which(grepl(pattern="Central",rownames(table.zero)))) %>%
+  add_row(,.before=10+which(grepl(pattern="Midline",rownames(table.zero)))) %>%
+  add_row(,.before=11+which(grepl(pattern="HER2Positive",rownames(table.zero)))) %>%
+  add_row(,.before=12+which(grepl(pattern="ERPositive",rownames(table.zero)))) %>%
+  add_row(,.before=13+which(grepl(pattern="PRPositive",rownames(table.zero)))) %>%
+  add_row(,.before=14+which(grepl(pattern="Metastasis",rownames(table.zero))))
+colnames(table.zero) = c("Estimate","95% CI","P-value",
+                          "Estimate","95% CI","P-value",
+                          "Estimate","95% CI","P-value")
+
+htmlTable(table.zero,
+          rgroup = c("","","",gsub(pattern="[.]",replacement=" ",x=explvars[3:length(explvars)])),
+          rnames = tablevars,
+          n.rgroup = c(1,1,1,sapply(vars.list,length)),
+          cgroup = c("Unadjusted","Adjusted","Adjusted"),
+          n.cgroup = c(3,3,3))
+
+# kable(table.zero) %>%
+#   kable_styling("striped") %>%
+#   add_header_above(c(" " = 1, "Unadjusted" = 3, "Adjusted" = 3))
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
