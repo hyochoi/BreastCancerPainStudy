@@ -34,7 +34,7 @@ library(faraway)
 library(tidyverse)
 library(table1)
 library(RColorBrewer)
-# library(ggpubr)
+library(ggpubr)
 
 ```
 
@@ -353,7 +353,7 @@ zipcode.pvt = sort(unique(dmd.pvt$zip))
 cat(paste("Number of patients with Poverty reported =",dim(dmd.pvt)[1]),"\n")
 
 dmd.pvt = dmd.pvt[-which(dmd.pvt$Poverty>70),]
-dmd.pvt = dmd.pvt[-which((dmd.pvt$Vacancy>40) & (dmd.pvt$mean.Pain<2)),]
+# dmd.pvt = dmd.pvt[-which((dmd.pvt$Vacancy>40) & (dmd.pvt$mean.Pain<2)),]
 cat(paste("Three outliers excluded"),"\n")
 
 cdmd.pvt = dmd.pvt
@@ -674,20 +674,20 @@ points(x=x,y=fhat(x),type="l",lwd=2)
 # Significance 
 
 ```{r,echo=FALSE,eval=FALSE}
-xlist = c("Poverty.f","marital.status.f","Primary.Payer.f2","Usual.Occupation.f2","race.f","stage.f","age.f","chemo.f","surgery.f")
+xlist = explvars[4:length(explvars)]
 
 x = xlist[1]
-p <- ggboxplot(cdmd.pvt, x=x, y="Pain",
+p <- ggboxplot(final.data, x=x, y="Pain",remove="Unknown",
                color = x, palette="jco")
 p + stat_compare_means()
 
 x = xlist[2]
-p <- ggboxplot(cdmd.pvt, x=x, y="Pain",
+p <- ggboxplot(cdmd.pvt, x=x, y="Pain",remove="Unknown",
                color = x, palette="jco")
 p + stat_compare_means()
 
 x = xlist[3]
-p <- ggboxplot(cdmd.pvt, x=x, y="Pain",
+p <- ggboxplot(cdmd.pvt, x=x, y="Pain",remove="Unknown",
                color = x, palette="jco")
 p + stat_compare_means()
 
@@ -725,13 +725,28 @@ p + stat_compare_means()
 
 ```{r,echo=FALSE,eval=FALSE}
 ## Figure code - boxplot
+xlist = explvars[4:length(explvars)]
 
-x = "Poverty"
-tmp = cdmd.pvt[,c("Pain","Poverty.f")]
-colnames(tmp) = c("Pain",x)
-tmp$Poverty = factor(tmp$Poverty)
-tmp$Poverty = relevel(tmp$Poverty,"low")
-base <- ggboxplot(tmp, x=x, y="Pain",
+# x = "Poverty"
+# tmp = cdmd.pvt[,c("Pain","Poverty.f")]
+# colnames(tmp) = c("Pain",x)
+# tmp$Poverty = factor(tmp$Poverty)
+# tmp$Poverty = relevel(tmp$Poverty,"low")
+# base <- ggboxplot(tmp, x=x, y="Pain",
+#                   color = x, palette="jco",legend="none") +
+#   labs(x = NULL, y = "Pain", title = x) + 
+#   font("title",size=20,color="black") + 
+#   font("x.text", size = 20, color = "black") +
+#   font("ylab", size = 20, color = "black") + 
+#   font("y.text", size = 20, color = "black") +
+#   stat_compare_means(size=7, aes(label = "p.format"),show.legend=F,hide.ns=T,
+#                      label.y = 10.5)
+# p <- base +
+#   theme(plot.title=element_text(face="bold",size=20,margin=margin(t=10,b=20)))
+# ggsave(p, file=paste0(x,".pdf"),width=6, height=6)
+
+x = xlist[2]
+base <- ggboxplot(final.data, x=x, y="Pain",remove="Unknown",
                   color = x, palette="jco",legend="none") +
   labs(x = NULL, y = "Pain", title = x) + 
   font("title",size=20,color="black") + 
@@ -742,16 +757,11 @@ base <- ggboxplot(tmp, x=x, y="Pain",
                      label.y = 10.5)
 p <- base +
   theme(plot.title=element_text(face="bold",size=20,margin=margin(t=10,b=20)))
-ggsave(p, file=paste0(x,".pdf"),width=6, height=6)
+p
+# ggsave(p, file=paste0(x,".pdf"),width=6, height=6)
 
-x = "Marital.Status"
-tmp <-
-  cdmd.pvt %>%
-  filter(marital.status.f2 %in% c("Married","Single")) %>%
-  select("Pain","marital.status.f2")
-colnames(tmp) = c("Pain",x)
-class(tmp[,2])
-base <- ggboxplot(tmp, x=x, y="Pain",
+x = xlist[3]
+base <- ggboxplot(final.data, x=x, y="Pain",remove="Unknown",
                   color = x, palette="jco",legend="none") +
   labs(x = NULL, y = "Pain", title = x) + 
   font("title",size=20,color="black") + 
@@ -759,45 +769,15 @@ base <- ggboxplot(tmp, x=x, y="Pain",
   font("ylab", size = 20, color = "black") + 
   font("y.text", size = 20, color = "black") +
   stat_compare_means(size=7, aes(label = "p.format"),show.legend=F,hide.ns=T,
-                     label.y = 10.5)
+                     label.y=10.5)
 p <- base +
   theme(plot.title=element_text(face="bold",size=20,margin=margin(t=10,b=20)))
-ggsave(p, file=paste0(x,".pdf"),width=6, height=6)
-
-x = "Primary.Payer"
-tmp <-
-  cdmd.pvt %>%
-  filter(Primary.Payer.f2 %in% c("Insurance","Medicaid")) %>%
-  select("Pain","Primary.Payer.f2")
-
-colnames(tmp) = c("Pain",x)
-class(tmp[,2])
-
-base <- ggboxplot(tmp, x=x, y="Pain",
-                  color = x, palette="jco",legend="none") +
-  labs(x = NULL, y = "Pain", title = x) + 
-  font("title",size=20,color="black") + 
-  font("x.text", size = 20, color = "black") +
-  font("ylab", size = 20, color = "black") + 
-  font("y.text", size = 20, color = "black") +
-  stat_compare_means(size=7, aes(label = "p.format"),show.legend=F,hide.ns=T,
-                     label.y = 10.5)
-p <- base +
-  theme(plot.title=element_text(face="bold",size=20,margin=margin(t=10,b=20)))
-
-ggsave(p, file=paste0(x,".pdf"),width=6, height=6)
+p
+# ggsave(p, file=paste0(x,".pdf"),width=6, height=6)
 
 x = "Occupation"
-tmp <-
-  cdmd.pvt %>%
-  filter(Usual.Occupation.f2 %in% c("Employed","Retired","Unemployed")) %>%
-  select("Pain","Usual.Occupation.f2")
-
-colnames(tmp) = c("Pain",x)
-class(tmp[,2])
-
 my_comparisons <- list( c("Employed", "Retired"), c("Retired", "Unemployed"), c("Employed", "Unemployed") )
-base <- ggboxplot(tmp, x=x, y="Pain",
+base <- ggboxplot(final.data, x=x, y="Pain",remove="Unknown",
                   color = x, palette="jco",legend="none") +
   labs(x = NULL, y = "Pain", title = x) + 
   font("title",size=20,color="black") + 
@@ -807,10 +787,10 @@ base <- ggboxplot(tmp, x=x, y="Pain",
   stat_compare_means(size=7, aes(label = "p.format"),show.legend=F,hide.ns=T,
                      label.y = 15) +
   stat_compare_means(comparisons = my_comparisons, aes(label = ..p.signif..),hide.ns=T)
-
 p <- base +
   theme(plot.title=element_text(face="bold",size=20,margin=margin(t=10,b=20)))
-ggsave(p, file=paste0(x,".pdf"),width=6, height=6)
+p
+# ggsave(p, file=paste0(x,".pdf"),width=6, height=6)
 
 
 x = "Race"
