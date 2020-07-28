@@ -36,6 +36,12 @@ library(table1)
 library(RColorBrewer)
 library(ggpubr)
 
+transform.p = function(x,digits=3) {
+  y = as.character(round(x,digits=digits))
+  y[which(y==0)] = "<.001"
+  return(y)
+}
+
 ```
 
 ```{r,echo=FALSE}
@@ -327,9 +333,10 @@ if (! params$race=="All") {
   dmd = dmd[which(dmd$race.f==params$race),]
 }
 
-unknownRaceN = length(which(dmd$race.f %in% c("Other","Unknown")))
-dmd = dmd[-which(dmd$race.f %in% c("Other","Unknown")),]
-cat(paste("Unknown and Other in Race removed (",unknownRaceN,"), Black and White remained N =",dim(dmd)[1]),"\n")
+# unknownRaceN = length(which(dmd$race.f %in% c("Other","Unknown")))
+# dmd = dmd[-which(dmd$race.f %in% c("Other","Unknown")),]
+dmd$race.f[which(dmd$race.f %in% c("Other","Unknown"))] = "Unknown"
+# cat(paste("Unknown and Other in Race removed (",unknownRaceN,"), Black and White remained N =",dim(dmd)[1]),"\n")
 dmd$race.f = factor(dmd$race.f)
 
 ## Re-name variables
@@ -353,7 +360,7 @@ zipcode.pvt = sort(unique(dmd.pvt$zip))
 cat(paste("Number of patients with Poverty reported =",dim(dmd.pvt)[1]),"\n")
 
 dmd.pvt = dmd.pvt[-which(dmd.pvt$Poverty>70),]
-# dmd.pvt = dmd.pvt[-which((dmd.pvt$Vacancy>40) & (dmd.pvt$mean.Pain<2)),]
+dmd.pvt = dmd.pvt[-which((dmd.pvt$Vacancy>40) & (dmd.pvt$mean.Pain<2)),]
 cat(paste("Three outliers excluded"),"\n")
 
 cdmd.pvt = dmd.pvt
@@ -377,9 +384,9 @@ final.data <-
          "Occupation","Marital.status","Insurance.type",
          "Cancer.stage","Chemo","Surgery",
          "Race","Age",
-         "Histology",
+         "Metastasis","Histology",
          "Primary.Site.1","Primary.Site.2",
-         "HER2","ER","PR","Metastasis")
+         "HER2","ER","PR")
 ```
 
 
@@ -403,9 +410,9 @@ explvars = c("Pain","Poverty","Vacancy",
              "Occupation","Marital.status","Insurance.type",
              "Cancer.stage","Chemo","Surgery",
              "Race","Age",
-             "Histology",
+             "Metastasis","Histology",
              "Primary.Site.1","Primary.Site.2",
-             "HER2","ER","PR","Metastasis")
+             "HER2","ER","PR")
 
 table1(as.formula(paste(" ~ ",paste(c(respvar,explvars),collapse=" + "))), data=final.data)
 ```
@@ -415,9 +422,9 @@ explvars = c("Pain","Poverty","Vacancy",
              "Occupation","Marital.status","Insurance.type",
              "Cancer.stage","Chemo","Surgery",
              "Race","Age",
-             "Histology",
+             "Metastasis","Histology",
              "Primary.Site.1","Primary.Site.2",
-             "HER2","ER","PR","Metastasis")
+             "HER2","ER","PR")
 
 get_summary = function(j) {
   x = final.data[,j]
@@ -438,8 +445,14 @@ table.sum1 = do.call("rbind",sapply(1:ncol(final.data),get_summary))
 get_mean = function(j) {
   x = final.data[,j]
   cname = colnames(final.data)[j]
+  formula = as.formula(paste("Pain ~",cname))
   if (class(x)=="numeric") {
-    tmp.sum = t(t(c(NA,NA)))
+    if (! cname == "Pain") {
+      fit = glm(formula, data = final.data, family = "poisson")
+      tmp.sum = t(t(c(round(exp(coef(summary(fit))[2,1]),digits=2),NA)))
+    } else {
+      tmp.sum = t(t(c(NA,NA)))
+    }
   } else {
     tmp.sum = t(t(sapply(split(final.data[,"Pain"],final.data[,j]),function(x) 
   paste0(round(mean(x),digits=2)," [",paste0(round(quantile(x,c(0.25,0.75)),digits=2),collapse=","),"]"))))
@@ -450,11 +463,18 @@ get_mean = function(j) {
 get_pval = function(j) {
   x = final.data[,j]
   cname = colnames(final.data)[j]
+  formula = as.formula(paste("Pain ~",cname))
   if (class(x)=="numeric") {
-    tmp.sum = t(t(c(1,NA)))
+    if (! cname == "Pain") {
+      fit = glm(formula, data = final.data, family = "poisson")
+      tmp.sum = t(t(c(transform.p(coef(summary(fit))[2,4],digits=3),NA)))
+    } else {
+      tmp.sum = t(t(c(NA,NA)))
+    }
   } else {
     tmp.sum = t(t(rep(NA,length(levels(x)))))
-    tmp.sum[1,1] = 1
+    pval = compare_means(formula,data=final.data)
+    tmp.sum[1,1] = transform.p(min(pval$p[which((! pval$group1 %in% "Unknown") & (! pval$group2 %in% "Unknown"))]),digits=3)
   }
   return(tmp.sum)
 }
@@ -487,7 +507,8 @@ kruskal.test(final.data[which(final.data[,j] %in% c("Employed","Unemployed")),"P
 
 wilcox.test(final.data[-which(final.data[,j]=="Unknown"),"Pain"] ~ final.data[-which(final.data[,j]=="Unknown"),j])
 
-compare_means(Pain ~ Occupation,data=final.data)
+pval = compare_means(Pain ~ Occupation,data=final.data)
+min(pval$p[which((! pval$group1 %in% "Unknown") & (! pval$group2 %in% "Unknown"))])
 ```
 
 ## Figure 2
@@ -745,7 +766,7 @@ xlist = explvars[4:length(explvars)]
 #   theme(plot.title=element_text(face="bold",size=20,margin=margin(t=10,b=20)))
 # ggsave(p, file=paste0(x,".pdf"),width=6, height=6)
 
-x = xlist[2]
+x = xlist[4]
 base <- ggboxplot(final.data, x=x, y="Pain",remove="Unknown",
                   color = x, palette="jco",legend="none") +
   labs(x = NULL, y = "Pain", title = x) + 
@@ -1064,24 +1085,24 @@ respvar = "Pain"
 explvars.1 = c("Poverty","Occupation","Marital.status","Insurance.type",
                "Cancer.stage","Chemo","Surgery",
                "Race","Age",
-               "Histology",
+               "Metastasis","Histology",
                "Primary.Site.1","Primary.Site.2",
-               "HER2","ER","PR","Metastasis")
+               "HER2","ER","PR")
 
 explvars.2 = c("Vacancy","Occupation","Marital.status","Insurance.type",
                "Cancer.stage","Chemo","Surgery",
                "Race","Age",
-               "Histology",
+               "Metastasis","Histology",
                "Primary.Site.1","Primary.Site.2",
-               "HER2","ER","PR","Metastasis")
+               "HER2","ER","PR")
 
 explvars = c("Poverty","Vacancy",
              "Occupation","Marital.status","Insurance.type",
              "Cancer.stage","Chemo","Surgery",
              "Race","Age",
-             "Histology",
+             "Metastasis","Histology",
              "Primary.Site.1","Primary.Site.2",
-             "HER2","ER","PR","Metastasis")
+             "HER2","ER","PR")
 
 full.formula.1 = as.formula(paste(respvar," ~ ",paste(explvars.1,collapse=" + ")))
 full.formula.2 = as.formula(paste(respvar," ~ ",paste(explvars.2,collapse=" + ")))
@@ -1149,11 +1170,6 @@ final.table$CI.y = paste(final.table$`2.5 %.y`,final.table$`97.5 %.y`,sep="-")
 final.table <- final.table %>%
   select(Unadj.Estimate,Unadj.CI,Unadj.P,Estimate.x,CI.x,P.x,Estimate.y,CI.y,P.y)
 
-transform.p = function(x) {
-  y = as.character(x)
-  y[which(y==0)] = "<.001"
-  return(y)
-}
 final.table$Unadj.P = transform.p(final.table$Unadj.P)
 final.table$P.x = transform.p(final.table$P.x)
 final.table$P.y = transform.p(final.table$P.y)
@@ -1181,13 +1197,13 @@ table.count <-
   add_row(,.before=5+which(grepl(pattern="Surgery",rownames(table.count)))) %>%
   add_row(,.before=6+which(grepl(pattern="Black",rownames(table.count)))) %>%
   add_row(,.before=7+which(grepl(pattern="Age",rownames(table.count)))) %>%
-  add_row(,.before=8+which(grepl(pattern="lobular",rownames(table.count)))) %>%
-  add_row(,.before=9+which(grepl(pattern="Central",rownames(table.count)))) %>%
-  add_row(,.before=10+which(grepl(pattern="Midline",rownames(table.count)))) %>%
-  add_row(,.before=11+which(grepl(pattern="HER2Positive",rownames(table.count)))) %>%
-  add_row(,.before=12+which(grepl(pattern="ERPositive",rownames(table.count)))) %>%
-  add_row(,.before=13+which(grepl(pattern="PRPositive",rownames(table.count)))) %>%
-  add_row(,.before=14+which(grepl(pattern="Metastasis",rownames(table.count))))
+  add_row(,.before=8+which(grepl(pattern="Metastasis",rownames(table.count)))) %>%
+  add_row(,.before=9+which(grepl(pattern="lobular",rownames(table.count)))) %>%
+  add_row(,.before=10+which(grepl(pattern="Central",rownames(table.count)))) %>%
+  add_row(,.before=11+which(grepl(pattern="Midline",rownames(table.count)))) %>%
+  add_row(,.before=12+which(grepl(pattern="HER2Positive",rownames(table.count)))) %>%
+  add_row(,.before=13+which(grepl(pattern="ERPositive",rownames(table.count)))) %>%
+  add_row(,.before=14+which(grepl(pattern="PRPositive",rownames(table.count))))
 colnames(table.count) = c("Estimate","95% CI","P-value",
                           "Estimate","95% CI","P-value",
                           "Estimate","95% CI","P-value")
@@ -1221,13 +1237,13 @@ table.zero <-
   add_row(,.before=5+which(grepl(pattern="Surgery",rownames(table.zero)))) %>%
   add_row(,.before=6+which(grepl(pattern="Black",rownames(table.zero)))) %>%
   add_row(,.before=7+which(grepl(pattern="Age",rownames(table.zero)))) %>%
-  add_row(,.before=8+which(grepl(pattern="lobular",rownames(table.zero)))) %>%
-  add_row(,.before=9+which(grepl(pattern="Central",rownames(table.zero)))) %>%
-  add_row(,.before=10+which(grepl(pattern="Midline",rownames(table.zero)))) %>%
-  add_row(,.before=11+which(grepl(pattern="HER2Positive",rownames(table.zero)))) %>%
-  add_row(,.before=12+which(grepl(pattern="ERPositive",rownames(table.zero)))) %>%
-  add_row(,.before=13+which(grepl(pattern="PRPositive",rownames(table.zero)))) %>%
-  add_row(,.before=14+which(grepl(pattern="Metastasis",rownames(table.zero))))
+  add_row(,.before=8+which(grepl(pattern="Metastasis",rownames(table.zero)))) %>%
+  add_row(,.before=9+which(grepl(pattern="lobular",rownames(table.zero)))) %>%
+  add_row(,.before=10+which(grepl(pattern="Central",rownames(table.zero)))) %>%
+  add_row(,.before=11+which(grepl(pattern="Midline",rownames(table.zero)))) %>%
+  add_row(,.before=12+which(grepl(pattern="HER2Positive",rownames(table.zero)))) %>%
+  add_row(,.before=13+which(grepl(pattern="ERPositive",rownames(table.zero)))) %>%
+  add_row(,.before=14+which(grepl(pattern="PRPositive",rownames(table.zero))))
 colnames(table.zero) = c("Estimate","95% CI","P-value",
                           "Estimate","95% CI","P-value",
                           "Estimate","95% CI","P-value")
