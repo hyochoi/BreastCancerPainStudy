@@ -417,6 +417,7 @@ explvars = c("Pain","Poverty","Vacancy",
 table1(as.formula(paste(" ~ ",paste(c(respvar,explvars),collapse=" + "))), data=final.data)
 ```
 
+
 ```{r,echo=FALSE}
 explvars = c("Pain","Poverty","Vacancy",
              "Occupation","Marital.status","Insurance.type",
