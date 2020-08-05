@@ -392,7 +392,7 @@ final.data <-
 
 # Summary of variables
 
-## Table 1
+## Table 1 (Base)
 
 ```{r,echo=FALSE,eval=FALSE}
 respvar = "Pain"
@@ -403,6 +403,84 @@ explvars = c("Pain","Poverty","Blight",
 
 table1(as.formula(paste(" ~ ",paste(c(respvar,explvars),collapse=" + "))), data=final.data)
 ```
+
+```{r,echo=FALSE}
+explvars = c("Pain","Poverty","Blight",
+             "Occupation","Marital.status","Insurance.type",
+             "Cancer.stage","Chemo","Surgery",
+             "Race","Age")
+
+get_summary = function(j) {
+  x = final.data[,j]
+  cname = colnames(final.data)[j]
+  if (class(x)=="numeric") {
+    tmp.sum = t(t(c(paste0(round(mean(x),digits=2)," (",round(sd(x),digits=2),")"),
+                    paste0(round(median(x),digits=2)," [",round(min(x),digits=2),",",round(max(x),digits=2),"]"))))
+    rownames(tmp.sum) = paste(cname,c("Mean (SD)","Median [Min,Max]"),sep="_")
+  } else {
+    tmp.sum = t(t(summary(x)))
+    tmp.sum[,1] = paste(tmp.sum[,1],paste0("(",round(100*(tmp.sum[,1]/sum(tmp.sum[,1])),digits=1),"%)"))
+    rownames(tmp.sum) = paste(cname,rownames(tmp.sum),sep="_")
+  }
+  return(tmp.sum)
+}
+table.sum1 = do.call("rbind",sapply(1:ncol(final.data),get_summary))
+
+get_mean = function(j) {
+  x = final.data[,j]
+  cname = colnames(final.data)[j]
+  formula = as.formula(paste("Pain ~",cname))
+  if (class(x)=="numeric") {
+    if (! cname == "Pain") {
+      fit = glm(formula, data = final.data, family = "poisson")
+      tmp.sum = t(t(c(round(exp(coef(summary(fit))[2,1]),digits=2),NA)))
+    } else {
+      tmp.sum = t(t(c(NA,NA)))
+    }
+  } else {
+    tmp.sum = t(t(sapply(split(final.data[,"Pain"],final.data[,j]),function(x) 
+  paste0(round(mean(x),digits=2)," [",paste0(round(quantile(x,c(0.25,0.75)),digits=2),collapse=","),"]"))))
+  }
+  return(tmp.sum)
+}
+
+get_pval = function(j) {
+  x = final.data[,j]
+  cname = colnames(final.data)[j]
+  formula = as.formula(paste("Pain ~",cname))
+  if (class(x)=="numeric") {
+    if (! cname == "Pain") {
+      fit = glm(formula, data = final.data, family = "poisson")
+      tmp.sum = t(t(c(transform.p(coef(summary(fit))[2,4],digits=3),NA)))
+    } else {
+      tmp.sum = t(t(c(NA,NA)))
+    }
+  } else {
+    tmp.sum = t(t(rep(NA,length(levels(x)))))
+    pval = compare_means(formula,data=final.data)
+    tmp.sum[1,1] = transform.p(min(pval$p[which((! pval$group1 %in% "Unknown") & (! pval$group2 %in% "Unknown"))]),digits=3)
+  }
+  return(tmp.sum)
+}
+
+table.sum1 = cbind(do.call("rbind",sapply(1:length(explvars),get_summary)),
+                   do.call("rbind",sapply(1:length(explvars),get_mean)),
+                   do.call("rbind",sapply(1:length(explvars),get_pval)))
+colnames(table.sum1) = c("No. (%)","Pain, mean [Q1,Q3]","P-value")
+
+## htmlTable
+library(htmlTable)
+
+rowlabels = sapply(rownames(table.sum1),function(x) unlist(strsplit(x,split="_"))[1])
+htmlTable(table.sum1,
+          rgroup = c(gsub(pattern="[.]",replacement=" ",x=explvars[1:length(explvars)])),
+          rnames = sapply(rownames(table.sum1),function(x) unlist(strsplit(x,split="_"))[2]),
+          n.rgroup = sapply(explvars, function(x) length(which(rowlabels==x))),
+          caption = "Table 1. Baseline characteristics, mean and interquartile range of pain intensity, nonparametric rank test")
+
+```
+
+## Table 1 (Base + more biomarker variables)
 
 ```{r,echo=FALSE,eval=FALSE}
 respvar = "Pain"
@@ -511,7 +589,7 @@ pval = compare_means(Pain ~ Occupation,data=final.data)
 min(pval$p[which((! pval$group1 %in% "Unknown") & (! pval$group2 %in% "Unknown"))])
 ```
 
-## Figure 2
+## Scatter plots
 
 **_Pain variable (Pain)_**:
 
@@ -570,6 +648,12 @@ meandata$size = sapply(meandata$zip,function(x) length(which(cdmd.pvt$zip==x)))
 # par(mfrow=c(1,2))
 cex = exp(2*(meandata$size/(max(meandata$size) - min(meandata$size) + 1)))
 
+x=seq(0,70,by=1)
+yy.pred = predict(p.glm, data.frame(Poverty=x), type="link", se=T)
+yy = exp(yy.pred$fit)
+yy.upper = exp(yy.pred$fit + 1.96*yy.pred$se)
+yy.lower = exp(yy.pred$fit - 1.96*yy.pred$se)
+
 pdf(6,6,file=paste("Pain_poverty_plot.pdf"))
 par(mar=c(4,4,2,2))
 plot(x=meandata$Poverty,y=meandata$Pain,
@@ -589,9 +673,15 @@ mtext(side=2, "Pain average", line=2, cex=1.5)
 
 # points(x=meandata$Poverty,y=meandata$Pain,
 #        cex=cex,lwd=1.5)
-x=seq(0,70,by=1)
-points(x=x,y=fhat(x),type="l",lwd=3,
+points(x=x,y=yy,type="l",lwd=3,
        col=brewer.pal(n=9,"YlOrRd")[7])
+polygon(c(x,rev(x)), c(yy.upper,rev(yy.lower)), col="#FF000050", border=NA)
+
+legend("bottomright",bty="n",cex=1.5,
+       legend=c(paste("exp(coef) =",round(exp(p.glm$coefficients[2]),digits=2)),
+                paste("(P-value < .001)"),
+                paste("")))
+
 dev.off()
 
 # par(mfrow=c(3,3))
@@ -636,6 +726,12 @@ meandata$size = sapply(meandata$zip,function(x) length(which(cdmd.pvt$zip==x)))
 # par(mfrow=c(1,2))
 cex = exp(2*(meandata$size/(max(meandata$size) - min(meandata$size) + 1)))
 
+x=seq(0,60,by=1)
+yy.pred = predict(p.glm, data.frame(Blight=x), type="link", se=T)
+yy = exp(yy.pred$fit)
+yy.upper = exp(yy.pred$fit + 1.96*yy.pred$se)
+yy.lower = exp(yy.pred$fit - 1.96*yy.pred$se)
+
 pdf(6,6,file=paste("Pain_Blight_plot.pdf"))
 par(mar=c(4,4,2,2))
 plot(x=meandata$Blight,y=meandata$Pain,
@@ -653,9 +749,14 @@ axis(side=2, tck=-0.015,lwd=0,line=-.8,cex.axis=1.5)
 mtext(side=1, "Blight", line=2.5, cex=1.5)
 mtext(side=2, "Pain average", line=2, cex=1.5)
 
-x=seq(0,53,by=1)
-points(x=x,y=fhat(x),type="l",lwd=3,
+points(x=x,y=yy,type="l",lwd=3,
        col=brewer.pal(n=9,"YlOrRd")[7])
+polygon(c(x,rev(x)), c(yy.upper,rev(yy.lower)), col="#FF000050", border=NA)
+
+legend("bottomright",bty="n",cex=1.5,
+       legend=c(paste("exp(coef) =",round(exp(p.glm$coefficients[2]),digits=2)),
+                paste("(P-value < .001)"),
+                paste("")))
 dev.off()
 
 ```
